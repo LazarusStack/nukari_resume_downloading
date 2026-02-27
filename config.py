@@ -31,21 +31,30 @@ SELECTORS = {
     # Detection
     "no_responses": "text=No responses yet",
     "captcha_text": "text=To continue your request please check the box",
+    "blocked_text": "text=Browser is using an unauthorised plugin",
     "success_toast": "text=Profile downloaded successfully",
 }
 
-# --- Timing (milliseconds for Playwright, seconds for sleep) ---
+# --- Timing (seconds) — intentionally slow to avoid rate limiting ---
 TIMING = {
-    "page_load_wait": 2.0,         # Wait after navigating to a new page
-    "after_show_dropdown": 0.5,    # Wait after clicking show dropdown
-    "after_show_select": 1.5,      # Wait after selecting 160
-    "after_select_all": 0.8,       # Wait after clicking Select All
-    "after_download": 2.5,         # Wait after clicking Download
-    "after_next_page": 1.5,        # Wait after clicking next page
-    "between_jobs": 1.0,           # Wait between processing jobs
-    "min_jitter": 0.5,             # Min random jitter added to delays
-    "max_jitter": 1.5,             # Max random jitter added to delays
+    "page_load_wait": 5.0,         # Wait after navigating to a new page
+    "after_show_dropdown": 2.0,    # Wait after clicking show dropdown
+    "after_show_select": 4.0,      # Wait after selecting 160
+    "after_select_all": 3.0,       # Wait after clicking Select All
+    "after_download": 8.0,         # Wait after clicking Download
+    "after_next_page": 4.0,        # Wait after clicking next page
+    "between_jobs": 5.0,           # Wait between processing jobs
+    "min_jitter": 1.0,             # Min random jitter added to delays
+    "max_jitter": 3.0,             # Max random jitter added to delays
+    "scroll_delay": 0.3,           # Delay between scroll steps
 }
+
+# --- Browser ---
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
 
 # --- File Paths ---
 DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")

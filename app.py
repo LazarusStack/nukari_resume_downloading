@@ -9,13 +9,16 @@ import os
 import subprocess
 import threading
 
-# Auto-install Playwright browsers for cloud deployment
+# Auto-install Playwright browsers + system deps for cloud deployment
 try:
-    subprocess.run(["playwright", "install", "chromium"], check=True, capture_output=True)
-except Exception:
-    pass
+    subprocess.run(
+        ["playwright", "install", "--with-deps", "chromium"],
+        check=True, capture_output=True, timeout=120,
+    )
+except Exception as e:
+    print(f"Playwright install: {e}")
 
-from scraper import NaukriBulkDownloader, CaptchaError
+from scraper import NaukriBulkDownloader, CaptchaError, BlockedError
 from progress_tracker import ProgressTracker
 from config import PROGRESS_FILE
 
@@ -124,6 +127,9 @@ if start_btn:
         except CaptchaError as e:
             st.error(f"CAPTCHA detected: {e}")
             add_log(f"CAPTCHA: {e}")
+        except BlockedError as e:
+            st.error(f"Blocked by Naukri: {e}")
+            add_log(f"BLOCKED: {e}")
         except Exception as e:
             st.error(f"Error: {e}")
             add_log(f"Error: {e}")

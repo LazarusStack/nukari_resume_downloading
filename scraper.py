@@ -1,6 +1,7 @@
 """
 Core automation logic for bulk CV downloading from Naukri recruiter portal.
 Uses Playwright to navigate the portal and download CVs for all job postings.
+Designed to mimic human browsing behavior to avoid detection.
 """
 
 import re
@@ -14,12 +15,18 @@ from config import (
     SELECTORS,
     TIMING,
     DOWNLOAD_DIR,
+    USER_AGENT,
 )
 from progress_tracker import ProgressTracker
 
 
 class CaptchaError(Exception):
     """Raised when a CAPTCHA is detected on the page."""
+    pass
+
+
+class BlockedError(Exception):
+    """Raised when Naukri blocks the browser."""
     pass
 
 
@@ -57,16 +64,40 @@ class NaukriBulkDownloader:
         return normalized
 
     def _sleep(self, base_seconds):
-        """Sleep with random jitter to avoid detection."""
+        """Sleep with random jitter to mimic human behavior."""
         jitter = random.uniform(TIMING["min_jitter"], TIMING["max_jitter"])
-        time.sleep(base_seconds + jitter)
+        total = base_seconds + jitter
+        time.sleep(total)
+
+    def _human_scroll(self):
+        """Scroll down slowly like a human to load lazy content."""
+        for _ in range(random.randint(3, 6)):
+            self.page.mouse.wheel(0, random.randint(200, 500))
+            time.sleep(TIMING["scroll_delay"] + random.uniform(0.1, 0.4))
 
     def setup_browser(self):
-        """Launch headless Chromium and inject cookies."""
+        """Launch headless Chromium with realistic browser fingerprint."""
         self.log("Launching browser...")
         self.playwright = sync_playwright().start()
-        self.browser = self.playwright.chromium.launch(headless=True)
-        self.context = self.browser.new_context()
+        self.browser = self.playwright.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
+        )
+        self.context = self.browser.new_context(
+            user_agent=USER_AGENT,
+            viewport={"width": 1920, "height": 1080},
+            locale="en-IN",
+            timezone_id="Asia/Kolkata",
+        )
+
+        # Remove webdriver flag
+        self.context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        """)
 
         try:
             self.context.add_cookies(self.cookies)
@@ -79,11 +110,25 @@ class NaukriBulkDownloader:
 
     def cleanup(self):
         """Close browser and Playwright."""
-        if self.browser:
-            self.browser.close()
-        if hasattr(self, "playwright") and self.playwright:
-            self.playwright.stop()
+        try:
+            if self.browser:
+                self.browser.close()
+            if hasattr(self, "playwright") and self.playwright:
+                self.playwright.stop()
+        except Exception:
+            pass
         self.log("Browser closed.")
+
+    def _check_blocked(self):
+        """Check if Naukri blocked us."""
+        try:
+            if "blocked" in self.page.url:
+                raise BlockedError("Naukri blocked the browser. Try again later with fresh cookies.")
+            blocked = self.page.locator(SELECTORS["blocked_text"])
+            if blocked.count() > 0 and blocked.first.is_visible():
+                raise BlockedError("Naukri detected automation. Try again later.")
+        except PlaywrightTimeout:
+            pass
 
     def _check_captcha(self):
         """Check if a CAPTCHA appeared. Raises CaptchaError if found."""
@@ -126,7 +171,7 @@ class NaukriBulkDownloader:
     def collect_all_job_ids(self):
         """Navigate job listing pages and collect all job IDs."""
         self.log(f"Navigating to job listing: {JOB_LISTING_URL}")
-        self.page.goto(JOB_LISTING_URL, timeout=30000)
+        self.page.goto(JOB_LISTING_URL, timeout=60000)
         self._sleep(TIMING["page_load_wait"])
 
         # Check for login redirect
@@ -135,6 +180,7 @@ class NaukriBulkDownloader:
                 "Redirected to login page. Cookies may be invalid or expired."
             )
 
+        self._check_blocked()
         self._check_captcha()
 
         all_jobs = []
@@ -146,6 +192,10 @@ class NaukriBulkDownloader:
 
             self.log(f"Scanning job listing page {page_num}...")
 
+            # Scroll to load all jobs on this page
+            self._human_scroll()
+            self._sleep(2.0)
+
             # Extract job links
             links = self.page.locator(SELECTORS["job_links"])
             count = links.count()
@@ -155,11 +205,10 @@ class NaukriBulkDownloader:
                 match = re.search(SELECTORS["job_link_pattern"], href)
                 if match:
                     job_id = match.group(1)
-                    # Try to get job title from the link or parent
                     title = links.nth(i).text_content().strip() or job_id
                     all_jobs.append({"id": job_id, "title": title})
 
-            self.log(f"  Found {count} jobs on page {page_num}")
+            self.log(f"  Found {count} link(s) on page {page_num}")
 
             # Check for next page
             if not self._has_next_page():
@@ -183,9 +232,10 @@ class NaukriBulkDownloader:
     def download_cvs_for_job(self, job_id, job_title=""):
         """Download all CVs for a single job posting."""
         url = JOB_APPLIES_URL.format(job_id=job_id)
-        self.page.goto(url, timeout=30000)
+        self.page.goto(url, timeout=60000)
         self._sleep(TIMING["page_load_wait"])
 
+        self._check_blocked()
         self._check_captcha()
 
         # Check for no responses
@@ -214,9 +264,14 @@ class NaukriBulkDownloader:
             if self._stop_requested:
                 break
 
+            self._check_blocked()
             self._check_captcha()
 
             self.log(f"  Page {page_num}/{total_pages}: selecting all & downloading...")
+
+            # Small scroll to simulate human reading
+            self._human_scroll()
+            self._sleep(1.0)
 
             # Click Select All
             try:
@@ -225,8 +280,14 @@ class NaukriBulkDownloader:
                     select_all.first.click()
                     self._sleep(TIMING["after_select_all"])
                 else:
-                    self.log(f"  Select All not found on page {page_num} — skipping")
-                    continue
+                    # Fallback: try checkbox directly
+                    cb = self.page.locator(SELECTORS["select_all_checkbox"])
+                    if cb.count() > 0:
+                        cb.first.click()
+                        self._sleep(TIMING["after_select_all"])
+                    else:
+                        self.log(f"  Select All not found on page {page_num} — skipping")
+                        continue
             except Exception as e:
                 self.log(f"  Error clicking Select All: {e}")
                 continue
@@ -240,7 +301,22 @@ class NaukriBulkDownloader:
                     download_count += 1
                     self.log(f"  Downloaded batch from page {page_num}")
                 else:
-                    self.log(f"  Download button not found on page {page_num}")
+                    # Fallback: try download label
+                    dl_label = self.page.locator(SELECTORS["download_label"])
+                    if dl_label.count() > 0 and dl_label.first.is_visible():
+                        dl_label.first.click()
+                        self._sleep(TIMING["after_download"])
+                        download_count += 1
+                        self.log(f"  Downloaded batch from page {page_num} (via label)")
+                    else:
+                        # Last resort: find Download text
+                        dl_text = self.page.get_by_text("Download", exact=True)
+                        if dl_text.count() > 0:
+                            dl_text.first.click()
+                            self._sleep(TIMING["after_download"])
+                            download_count += 1
+                        else:
+                            self.log(f"  Download button not found on page {page_num}")
             except Exception as e:
                 self.log(f"  Error clicking Download: {e}")
 
@@ -277,6 +353,8 @@ class NaukriBulkDownloader:
             if skipped > 0:
                 self.log(f"Skipping {skipped} already-completed jobs (resuming)")
 
+            self.log(f"Processing {len(remaining)} jobs...")
+
             # Step 2: Download CVs for each job
             for i, job in enumerate(remaining):
                 if self._stop_requested:
@@ -295,9 +373,19 @@ class NaukriBulkDownloader:
                     self.log(f"\n  CAPTCHA DETECTED: {e}")
                     self.log("  Please solve the CAPTCHA manually and restart.")
                     break
+                except BlockedError as e:
+                    self.log(f"\n  BLOCKED: {e}")
+                    self.log("  Waiting 60 seconds before retrying...")
+                    time.sleep(60)
+                    # Retry this job once
+                    try:
+                        dl_count = self.download_cvs_for_job(job["id"], job["title"])
+                        self.progress.mark_complete(job["id"], job["title"], dl_count)
+                    except Exception:
+                        self.log("  Still blocked. Stopping.")
+                        break
                 except Exception as e:
                     self.log(f"  Error processing job {job['id']}: {e}")
-                    # Continue to next job instead of stopping
                     continue
 
                 self._sleep(TIMING["between_jobs"])
@@ -314,7 +402,6 @@ class NaukriBulkDownloader:
 if __name__ == "__main__":
     import json
 
-    # For testing: paste cookies JSON here or load from file
     cookie_file = os.path.join(os.path.dirname(__file__), "cookies.json")
     if os.path.exists(cookie_file):
         with open(cookie_file) as f:
